@@ -253,15 +253,24 @@ def policy_names_for_user(rows):
     return by_user
 
 
+def unique_policy_names(rows):
+    names = []
+    seen = set()
+    for row in dedupe_rows(filter_enabled_app_rows(rows)):
+        policy_name = (row.get("policy_name") or "").strip()
+        if not policy_name or policy_name in seen:
+            continue
+        seen.add(policy_name)
+        names.append(policy_name)
+    return names
+
+
 def render_block(ip, endpoints_by_user, rows, failures, generated_at, cached):
-    policies_by_user = policy_names_for_user(rows)
     lines = [
-        BEGIN_MARKER,
-        f"查询时间: {generated_at}",
-        f"查询IP: {ip}",
-        f"缓存结果: {'是' if cached else '否'}",
+        f"查询时间：{generated_at}",
+        f"查询IP：{ip}",
+        f"缓存结果：{'是' if cached else '否'}",
         "",
-        "无线用户与启用应用控制策略:",
     ]
     endpoint_rows = [
         [
@@ -270,16 +279,17 @@ def render_block(ip, endpoints_by_user, rows, failures, generated_at, cached):
             item.get("mac", ""),
             item.get("ap_name", ""),
             item.get("ap_id", ""),
-            "、".join(policies_by_user.get((item.get("username") or "").lower(), [])) or "无",
         ]
         for item in endpoints_by_user.values()
     ]
-    lines.extend(format_table(["用户名", "IP", "MAC", "AP名称", "APID", "启用应用控制策略"], endpoint_rows))
+    lines.extend(format_table(["用户名", "IP", "MAC", "AP名称", "APID"], endpoint_rows))
+    lines.extend(["", "启用的应用控制策略", "------------------"])
+    policy_names = unique_policy_names(rows)
+    lines.extend(policy_names if policy_names else ["无"])
     if failures:
         lines.append("")
         lines.append("查询失败用户:")
         lines.extend(format_table(["用户名", "错误"], [[name, err] for name, err in sorted(failures.items())]))
-    lines.append(END_MARKER)
     return "\n".join(lines) + "\n\n"
 
 
@@ -288,8 +298,10 @@ def update_ip_file(path, block):
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             old_content = f.read()
-    pattern = re.compile(re.escape(BEGIN_MARKER) + r".*?" + re.escape(END_MARKER) + r"\n*", re.S)
-    cleaned = pattern.sub("", old_content).lstrip()
+    old_marker_pattern = re.compile(re.escape(BEGIN_MARKER) + r".*?" + re.escape(END_MARKER) + r"\n*", re.S)
+    cleaned = old_marker_pattern.sub("", old_content)
+    new_block_pattern = re.compile(r"^查询时间：.*?(?=^## \d{4}-\d{2}-\d{2}|\Z)", re.S | re.M)
+    cleaned = new_block_pattern.sub("", cleaned, count=1).lstrip()
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(block)
