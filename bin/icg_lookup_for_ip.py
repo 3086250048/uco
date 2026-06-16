@@ -290,6 +290,7 @@ def render_block(ip, endpoints_by_user, rows, failures, generated_at, cached):
         lines.append("")
         lines.append("查询失败用户:")
         lines.extend(format_table(["用户名", "错误"], [[name, err] for name, err in sorted(failures.items())]))
+    lines.extend(["", "============================================================"])
     return "\n".join(lines) + "\n\n"
 
 
