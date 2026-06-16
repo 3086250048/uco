@@ -26,6 +26,12 @@ assert_file_not_contains() {
     fi
 }
 
+assert_file_matches() {
+    local file="$1"
+    local expected_regex="$2"
+    grep -Eq -- "$expected_regex" "$file" || fail "$file 未匹配: $expected_regex"
+}
+
 chmod +x "$ROOT_DIR/tests/mocks/snmpget" "$ROOT_DIR/tests/mocks/snmpbulkwalk"
 
 IP_LIST="$TMP_DIR/ip.list"
@@ -93,6 +99,7 @@ assert_file_contains "$LOOKUP_IP_FILE" '查询时间：'
 assert_file_contains "$LOOKUP_IP_FILE" '查询IP：10.0.0.5'
 assert_file_contains "$LOOKUP_IP_FILE" '缓存结果：是'
 assert_file_contains "$LOOKUP_IP_FILE" '用户名'
+assert_file_matches "$LOOKUP_IP_FILE" '^用户名[[:space:]]+IP'
 assert_file_contains "$LOOKUP_IP_FILE" '启用的应用控制策略'
 assert_file_contains "$LOOKUP_IP_FILE" '------------------'
 assert_file_contains "$LOOKUP_IP_FILE" '============================================================'

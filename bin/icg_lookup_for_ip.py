@@ -207,19 +207,19 @@ def collect_rows(ip, endpoints_by_user, env, timeout):
     return rows, details, app_policies, failures
 
 
-def format_table(headers, rows):
+def format_table(headers, rows, indent="  "):
     if not rows:
-        return ["  无"]
+        return [f"{indent}无"]
     widths = [len(header) for header in headers]
     for row in rows:
         for idx, value in enumerate(row):
             widths[idx] = max(widths[idx], len(str(value)))
     lines = [
-        "  " + "  ".join(headers[idx].ljust(widths[idx]) for idx in range(len(headers))),
-        "  " + "  ".join("-" * widths[idx] for idx in range(len(headers))),
+        indent + "  ".join(headers[idx].ljust(widths[idx]) for idx in range(len(headers))),
+        indent + "  ".join("-" * widths[idx] for idx in range(len(headers))),
     ]
     for row in rows:
-        lines.append("  " + "  ".join(str(row[idx]).ljust(widths[idx]) for idx in range(len(headers))))
+        lines.append(indent + "  ".join(str(row[idx]).ljust(widths[idx]) for idx in range(len(headers))))
     return lines
 
 
@@ -282,7 +282,7 @@ def render_block(ip, endpoints_by_user, rows, failures, generated_at, cached):
         ]
         for item in endpoints_by_user.values()
     ]
-    lines.extend(format_table(["用户名", "IP", "MAC", "AP名称", "APID"], endpoint_rows))
+    lines.extend(format_table(["用户名", "IP", "MAC", "AP名称", "APID"], endpoint_rows, indent=""))
     lines.extend(["", "启用的应用控制策略", "------------------"])
     policy_names = unique_policy_names(rows)
     lines.extend(policy_names if policy_names else ["无"])
