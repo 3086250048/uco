@@ -157,8 +157,16 @@ def load_icg_users(csv_path, state):
         for row in reader:
             username = (row.get("username") or "").strip()
             policy_name = (row.get("policy_name") or "").strip()
+            policy_status = (row.get("policy_status") or "").strip()
+            policy_type = (row.get("policy_type") or "").strip().lower()
+            policy_type_text = (row.get("policy_type_text") or "").strip()
             host_ip = (row.get("ip") or "").strip()
-            if not username or not policy_name:
+            if (
+                not username
+                or not policy_name
+                or policy_status != "启用"
+                or (policy_type != "nhapp" and policy_type_text != "应用控制策略")
+            ):
                 continue
 
             item = {
@@ -166,8 +174,8 @@ def load_icg_users(csv_path, state):
                 "ip": host_ip,
                 "policy_name": policy_name,
                 "policy_priority": (row.get("policy_priority") or "").strip(),
-                "policy_status": (row.get("policy_status") or "").strip(),
-                "policy_type_text": (row.get("policy_type_text") or row.get("policy_type") or "").strip(),
+                "policy_status": policy_status,
+                "policy_type_text": policy_type_text or policy_type,
                 "policy_source": (row.get("policy_source") or row.get("policy_match") or "").strip(),
             }
             state["icg_policy_rows_by_user"].setdefault(username.lower(), []).append(item)

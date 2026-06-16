@@ -18,6 +18,14 @@ assert_file_contains() {
     grep -Fq "$expected" "$file" || fail "$file 未包含: $expected"
 }
 
+assert_file_not_contains() {
+    local file="$1"
+    local unexpected="$2"
+    if grep -Fq "$unexpected" "$file"; then
+        fail "$file 不应包含: $unexpected"
+    fi
+}
+
 chmod +x "$ROOT_DIR/tests/mocks/snmpget" "$ROOT_DIR/tests/mocks/snmpbulkwalk"
 
 IP_LIST="$TMP_DIR/ip.list"
@@ -72,6 +80,21 @@ assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" '查询IP: 10.0.0.5'
 assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" '无线接入信息:'
 assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" 'ICG用户策略信息:'
 assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" 'Test-01'
+
+LOOKUP_IP_FILE="$TMP_DIR/index/find/10.0.0.5.txt"
+{
+    echo 'username,displayName,mail,department,title,company,userPrincipalName,ip,mac,policy_name,policy_priority,policy_status,policy_type,policy_type_text,policy_state,policy_source,policy_group,policy_match,ap_name,ap_id'
+    echo 'alice,Alice,,,,,alice@example.com,10.0.0.5,0011-2233-4455,Test-01,4,启用,nhapp,应用控制策略,,local,,app_policy:user,AP-1,7'
+    echo 'alice,Alice,,,,,alice@example.com,10.0.0.5,0011-2233-4455,Disabled-App,5,禁用,nhapp,应用控制策略,,local,,app_policy:user,AP-1,7'
+    echo 'alice,Alice,,,,,alice@example.com,10.0.0.5,0011-2233-4455,Audit-Only,,启用,nhwebs,网页搜索策略,,local,,user_detail,AP-1,7'
+} > "$TMP_DIR/index/icg/10.0.0.5_icg_users.csv"
+"$ROOT_DIR/bin/icg_lookup_for_ip.py" "$LOOKUP_IP_FILE" --output-dir "$TMP_DIR/index/icg" --wireless-dir "$TMP_DIR/index/wireless" --areas UCO >/dev/null
+assert_file_contains "$LOOKUP_IP_FILE" '无线用户与启用应用控制策略:'
+assert_file_contains "$LOOKUP_IP_FILE" '启用应用控制策略'
+assert_file_contains "$LOOKUP_IP_FILE" 'AP-1'
+assert_file_contains "$LOOKUP_IP_FILE" 'Test-01'
+assert_file_not_contains "$LOOKUP_IP_FILE" 'Disabled-App'
+assert_file_not_contains "$LOOKUP_IP_FILE" 'Audit-Only'
 
 bash -n "$ROOT_DIR"/bin/*.sh "$ROOT_DIR/bin/get_mac_port"
 python3 -m py_compile \

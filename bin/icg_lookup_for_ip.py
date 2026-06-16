@@ -121,10 +121,19 @@ def usernames_from_ip_file(ip, path):
                 continue
             parts = line.split()
             for idx, part in enumerate(parts):
-                if mac_pattern.match(part) and idx >= 1:
-                    username = parts[idx - 1].strip()
-                    if username and username != "(未认证)":
-                        users.setdefault(username.lower(), {"username": username, "ip": ip, "mac": part})
+                if not mac_pattern.match(part):
+                    continue
+                if idx + 1 >= len(parts) or parts[idx + 1] != ip or idx < 3:
+                    continue
+                username = parts[idx - 1].strip()
+                if username and username != "(未认证)":
+                    users.setdefault(username.lower(), {
+                        "username": username,
+                        "ip": ip,
+                        "mac": part,
+                        "ap_name": " ".join(parts[:idx - 2]),
+                        "ap_id": parts[idx - 2],
+                    })
     return users
 
 
@@ -146,7 +155,22 @@ def load_cached_rows(csv_path):
         reader = csv.DictReader(f)
         for row in reader:
             rows.append({field: row.get(field, "") for field in FIELDS})
-    return rows
+    return filter_enabled_app_rows(rows)
+
+
+def is_enabled_app_policy(row):
+    policy_type = (row.get("policy_type") or "").strip().lower()
+    policy_type_text = (row.get("policy_type_text") or "").strip()
+    policy_status = (row.get("policy_status") or "").strip()
+    return (
+        (policy_type == "nhapp" or policy_type_text == "应用控制策略")
+        and policy_status == "启用"
+        and bool((row.get("policy_name") or "").strip())
+    )
+
+
+def filter_enabled_app_rows(rows):
+    return [row for row in rows if is_enabled_app_policy(row)]
 
 
 def collect_rows(ip, endpoints_by_user, env, timeout):
@@ -179,7 +203,7 @@ def collect_rows(ip, endpoints_by_user, env, timeout):
             failures[username] = str(exc)
             details[username] = {"status": "error", "error": str(exc), "data": []}
 
-    rows = build_rows(users, details, app_policies, wireless_by_user)
+    rows = filter_enabled_app_rows(build_rows(users, details, app_policies, wireless_by_user))
     return rows, details, app_policies, failures
 
 
@@ -218,37 +242,39 @@ def dedupe_rows(rows):
     return result
 
 
+def policy_names_for_user(rows):
+    by_user = {}
+    for row in dedupe_rows(filter_enabled_app_rows(rows)):
+        username = (row.get("username") or "").strip().lower()
+        policy_name = (row.get("policy_name") or "").strip()
+        if not username or not policy_name:
+            continue
+        by_user.setdefault(username, []).append(policy_name)
+    return by_user
+
+
 def render_block(ip, endpoints_by_user, rows, failures, generated_at, cached):
+    policies_by_user = policy_names_for_user(rows)
     lines = [
         BEGIN_MARKER,
         f"查询时间: {generated_at}",
         f"查询IP: {ip}",
         f"缓存结果: {'是' if cached else '否'}",
         "",
-        "关联用户名:",
+        "无线用户与启用应用控制策略:",
     ]
     endpoint_rows = [
-        [item.get("username", ""), item.get("mac", ""), item.get("ap_name", ""), item.get("ap_id", "")]
+        [
+            item.get("username", ""),
+            item.get("ip", "") or ip,
+            item.get("mac", ""),
+            item.get("ap_name", ""),
+            item.get("ap_id", ""),
+            "、".join(policies_by_user.get((item.get("username") or "").lower(), [])) or "无",
+        ]
         for item in endpoints_by_user.values()
     ]
-    lines.extend(format_table(["用户名", "MAC", "AP名称", "APID"], endpoint_rows))
-    lines.append("")
-    lines.append("ICG用户策略信息:")
-    policy_rows = dedupe_rows(rows)
-    lines.extend(format_table(
-        ["用户名", "策略类型", "策略名称", "优先级", "状态", "来源"],
-        [
-            [
-                row.get("username", ""),
-                row.get("policy_type_text", "") or row.get("policy_type", ""),
-                row.get("policy_name", ""),
-                row.get("policy_priority", ""),
-                row.get("policy_status", ""),
-                row.get("policy_source", ""),
-            ]
-            for row in policy_rows
-        ],
-    ))
+    lines.extend(format_table(["用户名", "IP", "MAC", "AP名称", "APID", "启用应用控制策略"], endpoint_rows))
     if failures:
         lines.append("")
         lines.append("查询失败用户:")
