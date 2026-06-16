@@ -1,0 +1,9 @@
+# area	ac_ip	community	vendor
+UCO	10.2.248.253	ucoac6508	huawei
+KS	10.141.255.3	ucoswitch	h3c
+JS	10.24.254.2	ucoswitch	h3c
+MLK	10.207.254.253	ucoswitch	h3c
+TJ	10.205.254.3	ucoswitch	h3c
+HN	10.200.254.2	ucoswitch	h3c
+YZ	10.41.254.4	ucoswitch	h3c
+GZ	10.209.250.5	ucoswitch	h3c

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+oid="${@: -1}"
+
+case "$oid" in
+    1.3.6.1.2.1.1.5.0)
+        if [[ "$*" == *" -Oqv "* ]]; then
+            echo '"TestSwitch"'
+        else
+            echo 'SNMPv2-MIB::sysName.0 = STRING: "TestSwitch"'
+        fi
+        ;;
+    *)
+        echo "mock snmpget: unsupported oid $oid" >&2
+        exit 1
+        ;;
+esac

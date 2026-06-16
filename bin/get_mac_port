@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$ROOT_DIR/lib/common.sh"
+
+COMMUNITY="${COMMUNITY:-ucoswitch}"
+PARALLEL_JOBS="${PARALLEL_JOBS:-10}"
+IP_LIST_FILE=""
+
+usage() {
+    echo "用法: $0 -i <ip_list_file> [-p parallel_jobs] [-c community]"
+}
+
+normalize_mac() {
+    local input="$1"
+    local mac
+    mac="$(printf '%s' "$input" | tr -d ':-. ' | tr 'A-F' 'a-f')"
+    [[ ${#mac} -eq 12 ]] || return 1
+    printf '%s-%s-%s\n' "${mac:0:4}" "${mac:4:4}" "${mac:8:4}"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -i) IP_LIST_FILE="$2"; shift 2 ;;
+        -p) PARALLEL_JOBS="$2"; shift 2 ;;
+        -c) COMMUNITY="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "未知参数: $1" ;;
+    esac
+done
+
+[[ -n "$IP_LIST_FILE" ]] || { usage; exit 1; }
+ensure_file "$IP_LIST_FILE"
+
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+echo "正在并行收集 MAC 地址表..."
+"$SCRIPT_DIR/collect_mac.sh" -i "$IP_LIST_FILE" -o "$WORK_DIR" -p "$PARALLEL_JOBS" -c "$COMMUNITY" >/dev/null
+DB_FILE="$(find "$WORK_DIR" -type f -name '*_mac.csv' | head -n 1)"
+[[ -n "$DB_FILE" && -s "$DB_FILE" ]] || die "未获取到任何 MAC 记录，请检查 SNMP 配置或 IP 列表。"
+
+total_records="$(count_csv_records "$DB_FILE")"
+echo "数据库已加载，共 $total_records 条 MAC 记录。"
+echo "输入 MAC 地址查询（支持 xx:xx:xx:xx:xx:xx、xxxx-xxxx-xxxx、xxxx.xxxx.xxxx），输入 quit/exit 退出。"
+
+while true; do
+    read -r -p "请输入 MAC 地址: " input || break
+    [[ "$input" == "quit" || "$input" == "exit" ]] && break
+
+    mac="$(normalize_mac "$input" || true)"
+    if [[ -z "$mac" ]]; then
+        echo "错误: MAC 地址格式无效。"
+        continue
+    fi
+
+    results="$(grep -i ",\"$mac\"," "$DB_FILE" || true)"
+    if [[ -z "$results" ]]; then
+        echo "未找到 MAC 地址 $mac"
+        continue
+    fi
+
+    echo "找到以下记录："
+    printf '%s\n' "$results" | awk -F',' '
+        {
+            gsub(/^"|"$/, "", $1); gsub(/^"|"$/, "", $2)
+            gsub(/^"|"$/, "", $3); gsub(/^"|"$/, "", $4)
+            printf "  设备IP: %s, VLAN: %s, MAC: %s, 端口: %s\n", $1, $2, $3, $4
+        }
+    '
+done

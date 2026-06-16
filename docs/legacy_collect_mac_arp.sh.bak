@@ -1,0 +1,149 @@
+#!/bin/bash
+# ============================================================
+# 脚本名称: collect_mac_with_ip.sh
+# 功能: 并行获取多台交换机的MAC地址表，并关联ARP表获取对应IP
+# 输出字段: 设备IP, VLAN, MAC, 端口, 主机IP
+# 依赖: snmpbulkwalk (net-snmp-utils), awk (mawk/gawk均可)
+# ============================================================
+
+COMMUNITY="ucoswitch"
+SNMP_VERSION="2c"
+OUTPUT_DIR="./"
+PARALLEL_JOBS=10
+IP_LIST_FILE=""
+
+# 解析参数
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -i) IP_LIST_FILE="$2"; shift 2 ;;
+        -o) OUTPUT_DIR="$2"; shift 2 ;;
+        -p) PARALLEL_JOBS="$2"; shift 2 ;;
+        *) echo "未知参数: $1"; exit 1 ;;
+    esac
+done
+
+if [[ -z "$IP_LIST_FILE" || ! -f "$IP_LIST_FILE" ]]; then
+    echo "用法: $0 -i <ip_list_file> [-o output_dir] [-p parallel_jobs]"
+    exit 1
+fi
+
+mkdir -p "$OUTPUT_DIR"
+TIMESTAMP=$(date +"%Y%m%d%H")
+FINAL_OUTPUT="${OUTPUT_DIR}/${TIMESTAMP}.csv"
+TMP_PREFIX="${OUTPUT_DIR}/.mac_ip_tmp_$$"
+
+cleanup() {
+    rm -f "${TMP_PREFIX}"_* 2>/dev/null
+}
+trap cleanup EXIT
+
+echo "开始采集（含IP映射），临时文件前缀: ${TMP_PREFIX}_ ，最终输出: $FINAL_OUTPUT"
+
+process_switch() {
+    local switch_ip="$1"
+    local tmp_if=$(mktemp) || return 1
+    local tmp_port=$(mktemp) || return 1
+    local tmp_mac=$(mktemp) || return 1
+    local tmp_arp=$(mktemp) || return 1
+    local tmp_out="${TMP_PREFIX}_${switch_ip//./_}"
+
+    # 并行获取四张表
+    snmpbulkwalk -v "$SNMP_VERSION" -c "$COMMUNITY" "$switch_ip" "1.3.6.1.2.1.2.2.1.2" > "$tmp_if" 2>/dev/null &
+    snmpbulkwalk -v "$SNMP_VERSION" -c "$COMMUNITY" "$switch_ip" "1.3.6.1.2.1.17.1.4.1.2" > "$tmp_port" 2>/dev/null &
+    snmpbulkwalk -v "$SNMP_VERSION" -c "$COMMUNITY" "$switch_ip" "1.3.6.1.2.1.17.7.1.2.2.1.2" > "$tmp_mac" 2>/dev/null &
+    snmpbulkwalk -v "$SNMP_VERSION" -c "$COMMUNITY" "$switch_ip" "1.3.6.1.2.1.4.22.1.2" > "$tmp_arp" 2>/dev/null &
+    wait
+
+    if [[ ! -s "$tmp_if" || ! -s "$tmp_port" || ! -s "$tmp_mac" ]]; then
+        rm -f "$tmp_if" "$tmp_port" "$tmp_mac" "$tmp_arp"
+        return 1
+    fi
+
+    awk -v ip="$switch_ip" '
+    BEGIN { OFS="," }
+    # 1. ifDescr -> ifIndex 映射
+    FILENAME == ARGV[1] && /STRING:/ {
+        split($1, a, ".")
+        ifIndex = a[length(a)]
+        name = $0
+        sub(/.*STRING: "/, "", name)
+        sub(/".*/, "", name)
+        ifindex_to_name[ifIndex] = name
+        next
+    }
+    # 2. 逻辑端口 -> ifIndex 映射
+    FILENAME == ARGV[2] && /INTEGER:/ {
+        split($1, a, ".")
+        logicalPort = a[length(a)]
+        ifIndex = $NF
+        logical_to_ifindex[logicalPort] = ifIndex
+        next
+    }
+    # 3. ARP 表：Hex-STRING 格式，OID 后缀为 ifIndex.IP地址四段
+    FILENAME == ARGV[3] && /Hex-STRING:/ {
+        oid = $1
+        split(oid, oid_parts, ".")
+        n = length(oid_parts)
+        if (n >= 4) {
+            ip_addr = oid_parts[n-3] "." oid_parts[n-2] "." oid_parts[n-1] "." oid_parts[n]
+        } else {
+            next
+        }
+        mac_hex_str = $0
+        sub(/.*Hex-STRING: /, "", mac_hex_str)
+        gsub(/ /, "", mac_hex_str)
+        mac_hex_str = tolower(mac_hex_str)
+        if (length(mac_hex_str) >= 12) {
+            mac_key = substr(mac_hex_str,1,4) "-" substr(mac_hex_str,5,4) "-" substr(mac_hex_str,9,4)
+            if (!(mac_key in mac_to_ip)) {
+                mac_to_ip[mac_key] = ip_addr
+            }
+        }
+        next
+    }
+    # 4. MAC 地址表
+    FILENAME == ARGV[4] && /INTEGER:/ {
+        split($1, oid_parts, ".")
+        n = length(oid_parts)
+        if (n >= 20) {
+            vlan = oid_parts[n-6]
+            mac_bytes[1]=oid_parts[n-5]; mac_bytes[2]=oid_parts[n-4]
+            mac_bytes[3]=oid_parts[n-3]; mac_bytes[4]=oid_parts[n-2]
+            mac_bytes[5]=oid_parts[n-1]; mac_bytes[6]=oid_parts[n]
+            mac_hex = sprintf("%02x%02x%02x%02x%02x%02x",
+                              mac_bytes[1], mac_bytes[2], mac_bytes[3],
+                              mac_bytes[4], mac_bytes[5], mac_bytes[6])
+            mac = substr(mac_hex,1,4) "-" substr(mac_hex,5,4) "-" substr(mac_hex,9,4)
+            logical_port = $NF
+            ifIndex = logical_to_ifindex[logical_port]
+            port_name = ifindex_to_name[ifIndex]
+            if (port_name == "") port_name = "未知(逻辑端口 " logical_port ")"
+            host_ip = (mac in mac_to_ip) ? mac_to_ip[mac] : ""
+            print ip, vlan, mac, port_name, host_ip
+        }
+        next
+    }' "$tmp_if" "$tmp_port" "$tmp_arp" "$tmp_mac" > "$tmp_out"
+
+    rm -f "$tmp_if" "$tmp_port" "$tmp_mac" "$tmp_arp"
+    if [[ ! -s "$tmp_out" ]]; then
+        rm -f "$tmp_out"
+        return 1
+    fi
+    return 0
+}
+
+export -f process_switch
+export COMMUNITY SNMP_VERSION TMP_PREFIX
+
+grep -v '^#' "$IP_LIST_FILE" | grep -v '^$' | \
+    xargs -I {} -P "$PARALLEL_JOBS" bash -c 'process_switch "$@"' _ {}
+
+{
+    echo "设备IP,VLAN,MAC,端口,主机IP"
+    cat "${TMP_PREFIX}"_* 2>/dev/null | sort -V -k1,1
+} > "$FINAL_OUTPUT"
+
+total_records=$(tail -n +2 "$FINAL_OUTPUT" 2>/dev/null | wc -l)
+echo "采集完成，共 $total_records 条记录，保存至 $FINAL_OUTPUT"
+
+cleanup
