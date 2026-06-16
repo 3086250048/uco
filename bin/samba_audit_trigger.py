@@ -30,6 +30,8 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
     last_trigger = {}
     active_processes = []
     max_active = int(os.environ.get("SAMBA_TRIGGER_MAX_ACTIVE", "1"))
+    find_cooldown_seconds = int(os.environ.get("SAMBA_FIND_TRIGGER_COOLDOWN", "10"))
+    ip_txt_re = re.compile(r'^/srv/smb/find/\d{1,3}(?:\.\d{1,3}){3}\.txt$')
 
     def reap_children():
         active_processes[:] = [proc for proc in active_processes if proc.poll() is None]
@@ -64,17 +66,18 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
                     # 查找匹配的监控路径
                     for watch_path, script_cmd in watched_path_map.items():
                         if file_path.startswith(watch_path):
-                            if watch_path in ('/srv/smb/users/', '/srv/smb/find/') and not file_path.endswith('.txt'):
+                            if watch_path == '/srv/smb/find/' and not ip_txt_re.match(file_path):
+                                break
+                            if watch_path == '/srv/smb/users/' and not file_path.endswith('.txt'):
                                 break
                             # find 目录按具体 IP 文件去重；刷新入口按用户+根路径去重。
                             trigger_key = (username, watch_path, file_path) if watch_path == '/srv/smb/find/' else (username, watch_path)
+                            trigger_cooldown = find_cooldown_seconds if watch_path == '/srv/smb/find/' else cooldown_seconds
                             now = time.time()
                             if trigger_key in last_trigger:
-                                if now - last_trigger[trigger_key] < cooldown_seconds:
-                                    logging.info(f"[冷却跳过] {username} 访问 {watch_path}，距上次触发 {now - last_trigger[trigger_key]:.1f} 秒，小于 {cooldown_seconds} 秒")
+                                if now - last_trigger[trigger_key] < trigger_cooldown:
+                                    logging.info(f"[冷却跳过] {username} 访问 {file_path}，距上次触发 {now - last_trigger[trigger_key]:.1f} 秒，小于 {trigger_cooldown} 秒")
                                     break  # 跳过本次触发
-                            # 更新触发时间
-                            last_trigger[trigger_key] = now
 
                             command = [
                                 arg.format(path=file_path, client_ip=client_ip, smb_user=username)
@@ -84,9 +87,10 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
                             try:
                                 reap_children()
                                 if len(active_processes) >= max_active:
-                                    logging.warning(f"当前已有 {len(active_processes)} 个触发任务在执行，跳过本次触发以避免资源耗尽")
+                                    logging.warning(f"当前已有 {len(active_processes)} 个触发任务在执行，跳过本次触发但不进入冷却: {file_path}")
                                     break
                                 active_processes.append(subprocess.Popen(command))
+                                last_trigger[trigger_key] = now
                             except Exception as e:
                                 logging.error(f"执行命令 {' '.join(command)} 时出错: {e}")
                             break  # 匹配到一个监控路径后就退出循环，避免重复触发
