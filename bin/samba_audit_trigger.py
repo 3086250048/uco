@@ -12,13 +12,14 @@ BIN_DIR = os.path.join(ROOT_DIR, "bin")
 LOG_FILE = os.environ.get("SAMBA_TRIGGER_LOG", "/var/log/samba-trigger-monitor.log")
 AUDIT_LOG = os.environ.get("SAMBA_AUDIT_LOG", "/var/log/samba/audit.log")
 
+log_handlers = [logging.FileHandler(LOG_FILE)]
+if os.environ.get("SAMBA_TRIGGER_CONSOLE") == "1":
+    log_handlers.append(logging.StreamHandler())
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
+    handlers=log_handlers,
 )
 
 def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
@@ -67,6 +68,7 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
                     for watch_path, script_cmd in watched_path_map.items():
                         if file_path.startswith(watch_path):
                             if watch_path == '/srv/smb/find/' and not ip_txt_re.match(file_path):
+                                logging.debug(f"find 非 IP 文件访问跳过: {file_path}")
                                 break
                             if watch_path == '/srv/smb/users/' and not file_path.endswith('.txt'):
                                 break
@@ -76,21 +78,30 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
                             now = time.time()
                             if trigger_key in last_trigger:
                                 if now - last_trigger[trigger_key] < trigger_cooldown:
-                                    logging.info(f"[冷却跳过] {username} 访问 {file_path}，距上次触发 {now - last_trigger[trigger_key]:.1f} 秒，小于 {trigger_cooldown} 秒")
+                                    logging.debug(f"[冷却跳过] {username} 访问 {file_path}，距上次触发 {now - last_trigger[trigger_key]:.1f} 秒，小于 {trigger_cooldown} 秒")
                                     break  # 跳过本次触发
 
                             command = [
                                 arg.format(path=file_path, client_ip=client_ip, smb_user=username)
                                 for arg in script_cmd
                             ]
-                            logging.info(f"检测到访问: {username} from {client_ip} accessed {file_path}. Triggering: {' '.join(command)}")
                             try:
                                 reap_children()
                                 if len(active_processes) >= max_active:
-                                    logging.warning(f"当前已有 {len(active_processes)} 个触发任务在执行，跳过本次触发但不进入冷却: {file_path}")
+                                    if watch_path == '/srv/smb/find/':
+                                        logging.debug(f"find 触发任务忙，跳过且不进入冷却: {file_path}")
+                                    else:
+                                        logging.warning(f"当前已有 {len(active_processes)} 个触发任务在执行，跳过本次触发但不进入冷却: {file_path}")
                                     break
-                                active_processes.append(subprocess.Popen(command))
+                                popen_kwargs = {}
+                                if watch_path == '/srv/smb/find/':
+                                    popen_kwargs = {
+                                        "stdout": subprocess.DEVNULL,
+                                        "stderr": subprocess.DEVNULL,
+                                    }
+                                active_processes.append(subprocess.Popen(command, **popen_kwargs))
                                 last_trigger[trigger_key] = now
+                                logging.info(f"检测到访问: {username} from {client_ip} accessed {file_path}. Triggering: {' '.join(command)}")
                             except Exception as e:
                                 logging.error(f"执行命令 {' '.join(command)} 时出错: {e}")
                             break  # 匹配到一个监控路径后就退出循环，避免重复触发
@@ -113,5 +124,6 @@ if __name__ == "__main__":
         r'/srv/smb/Wireless_user/刷新.txt': [refresh_cmd, 'wireless'],
     }
     os.makedirs('/var/log/samba', exist_ok=True)
-    logging.info("启动 Samba 审计日志监控守护进程（冷却时间 10 秒，基于用户+根路径去重）...")
+    find_cooldown = os.environ.get("SAMBA_FIND_TRIGGER_COOLDOWN", "10")
+    logging.info(f"启动 Samba 审计日志监控守护进程（find 冷却 {find_cooldown} 秒，刷新入口冷却 300 秒）...")
     monitor_samba_audit(AUDIT_LOG, watched_paths, cooldown_seconds=300)
