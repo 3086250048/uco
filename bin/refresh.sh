@@ -19,6 +19,7 @@ usage() {
   access-vlan    刷新 PVID
   switch-time    刷新交换机时间
   wireless       刷新无线用户表
+  icg-users      刷新 ICG 用户策略信息
   find-index     生成按 IP 查询索引
   all            按顺序执行 mac-arp、wireless、find-index
 USAGE
@@ -58,6 +59,9 @@ run_task_body() {
             ;;
         wireless)
             "$SCRIPT_DIR/collect_ac6508_users.sh" -p "${WIRELESS_PARALLEL_JOBS:-2}"
+            ;;
+        icg-users)
+            "$SCRIPT_DIR/collect_icg_users.py"
             ;;
         find-index)
             "$SCRIPT_DIR/csv_to_ip.py"

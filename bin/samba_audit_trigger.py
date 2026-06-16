@@ -66,9 +66,8 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
                         if file_path.startswith(watch_path):
                             if watch_path in ('/srv/smb/users/', '/srv/smb/find/') and not file_path.endswith('.txt'):
                                 break
-                            # 去重 key：用户名 + 监控根路径。不要把具体文件放进 key，
-                            # 否则一个用户批量打开多个 txt 会同时触发大量查询进程。
-                            trigger_key = (username, watch_path)
+                            # find 目录按具体 IP 文件去重；刷新入口按用户+根路径去重。
+                            trigger_key = (username, watch_path, file_path) if watch_path == '/srv/smb/find/' else (username, watch_path)
                             now = time.time()
                             if trigger_key in last_trigger:
                                 if now - last_trigger[trigger_key] < cooldown_seconds:
@@ -77,15 +76,19 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
                             # 更新触发时间
                             last_trigger[trigger_key] = now
 
-                            logging.info(f"检测到访问: {username} from {client_ip} accessed {file_path}. Triggering: {' '.join(script_cmd)}")
+                            command = [
+                                arg.format(path=file_path, client_ip=client_ip, smb_user=username)
+                                for arg in script_cmd
+                            ]
+                            logging.info(f"检测到访问: {username} from {client_ip} accessed {file_path}. Triggering: {' '.join(command)}")
                             try:
                                 reap_children()
                                 if len(active_processes) >= max_active:
                                     logging.warning(f"当前已有 {len(active_processes)} 个触发任务在执行，跳过本次触发以避免资源耗尽")
                                     break
-                                active_processes.append(subprocess.Popen(script_cmd))
+                                active_processes.append(subprocess.Popen(command))
                             except Exception as e:
-                                logging.error(f"执行命令 {' '.join(script_cmd)} 时出错: {e}")
+                                logging.error(f"执行命令 {' '.join(command)} 时出错: {e}")
                             break  # 匹配到一个监控路径后就退出循环，避免重复触发
                     else:
                         # 没有匹配任何 watch_path
@@ -95,12 +98,14 @@ def monitor_samba_audit(log_file_path, watched_path_map, cooldown_seconds=60):
 
 if __name__ == "__main__":
     refresh_cmd = os.path.join(BIN_DIR, 'refresh.sh')
+    icg_lookup_cmd = os.path.join(BIN_DIR, 'icg_lookup_for_ip.py')
     watched_paths = {
         r'/srv/smb/100M_port/刷新.txt': [refresh_cmd, '100m-port'],
         r'/srv/smb/mac_table/刷新.txt': [refresh_cmd, 'mac-arp'],
         r'/srv/smb/PVID/刷新.txt': [refresh_cmd, 'access-vlan'],
         r'/srv/smb/time/刷新.txt': [refresh_cmd, 'switch-time'],
         r'/srv/smb/find/刷新.txt': [refresh_cmd, 'find-index'],
+        r'/srv/smb/find/': [icg_lookup_cmd, '{path}'],
         r'/srv/smb/Wireless_user/刷新.txt': [refresh_cmd, 'wireless'],
     }
     os.makedirs('/var/log/samba', exist_ok=True)

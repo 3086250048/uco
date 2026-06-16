@@ -7,6 +7,7 @@ from datetime import datetime
 
 DEFAULT_MAC_DIR = os.environ.get("MAC_TABLE_DIR", "/srv/smb/mac_table")
 DEFAULT_WIRELESS_DIR = os.environ.get("WIRELESS_USER_DIR", "/srv/smb/Wireless_user")
+DEFAULT_ICG_DIR = os.environ.get("ICG_USER_DIR", "/srv/smb/icg_users")
 DEFAULT_FIND_DIR = os.environ.get("FIND_OUTPUT_DIR", "/srv/smb/find")
 DEFAULT_AREAS = ["UCO", "GZ", "HN", "JS", "KS", "MLK", "TJ", "YZ"]
 
@@ -150,13 +151,40 @@ def load_wireless(csv_path, state):
                 state["ip_to_macs"].setdefault(host_ip, set()).add(mac)
 
 
-def build_state(mac_dir, wireless_dir, areas):
+def load_icg_users(csv_path, state):
+    with open(csv_path, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            username = (row.get("username") or "").strip()
+            policy_name = (row.get("policy_name") or "").strip()
+            host_ip = (row.get("ip") or "").strip()
+            if not username or not policy_name:
+                continue
+
+            item = {
+                "username": username,
+                "ip": host_ip,
+                "policy_name": policy_name,
+                "policy_priority": (row.get("policy_priority") or "").strip(),
+                "policy_status": (row.get("policy_status") or "").strip(),
+                "policy_type_text": (row.get("policy_type_text") or row.get("policy_type") or "").strip(),
+                "policy_source": (row.get("policy_source") or row.get("policy_match") or "").strip(),
+            }
+            state["icg_policy_rows_by_user"].setdefault(username.lower(), []).append(item)
+            if is_valid_ip(host_ip):
+                state["icg_policy_rows_by_ip"].setdefault(host_ip, []).append(item)
+
+
+def build_state(mac_dir, wireless_dir, icg_dir, areas):
     state = {
         "mac_rows": {},
         "wireless_rows": {},
+        "icg_policy_rows_by_user": {},
+        "icg_policy_rows_by_ip": {},
         "ip_to_macs": {},
         "mac_sources": [],
         "wireless_sources": [],
+        "icg_sources": [],
     }
 
     for sub in areas:
@@ -180,7 +208,35 @@ def build_state(mac_dir, wireless_dir, areas):
     else:
         print(f"No CSV file found in {wireless_dir}")
 
+    icg_csv = os.path.join(icg_dir, "latest_icg_users.csv")
+    if not os.path.exists(icg_csv):
+        icg_csv = get_latest_csv(icg_dir)
+    if icg_csv:
+        print(f"Processing icg_users {icg_csv}")
+        state["icg_sources"].append(icg_csv)
+        load_icg_users(icg_csv, state)
+    else:
+        print(f"No CSV file found in {icg_dir}")
+
     return state
+
+
+def collect_icg_policy_rows(ip, macs, state):
+    rows = []
+    usernames = set()
+    for mac in macs:
+        for wireless in state["wireless_rows"].get(mac, []):
+            username = wireless.get("username", "").strip()
+            if username and username != "(未认证)":
+                usernames.add(username.lower())
+
+    for username in sorted(usernames):
+        rows.extend(state["icg_policy_rows_by_user"].get(username, []))
+    rows.extend(state["icg_policy_rows_by_ip"].get(ip, []))
+    return dedupe_dicts(
+        rows,
+        ["username", "policy_type_text", "policy_name", "policy_priority", "policy_status", "policy_source"],
+    )
 
 
 def render_ip_block(ip, macs, state):
@@ -231,6 +287,25 @@ def render_ip_block(ip, macs, state):
                 lines.append("  无匹配无线记录")
             lines.append("")
 
+    icg_policy_rows = collect_icg_policy_rows(ip, macs, state)
+    if icg_policy_rows:
+        lines.append("ICG用户策略信息:")
+        lines.extend(format_table(
+            ["用户名", "策略类型", "策略名称", "优先级", "状态", "来源"],
+            [
+                [
+                    r["username"],
+                    r["policy_type_text"],
+                    r["policy_name"],
+                    r["policy_priority"],
+                    r["policy_status"],
+                    r["policy_source"],
+                ]
+                for r in icg_policy_rows
+            ],
+        ))
+        lines.append("")
+
     return "\n".join(lines).rstrip() + "\n\n"
 
 
@@ -256,6 +331,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="从 MAC/无线 CSV 生成按 IP 查询的文本索引。")
     parser.add_argument("--mac-dir", default=DEFAULT_MAC_DIR)
     parser.add_argument("--wireless-dir", default=DEFAULT_WIRELESS_DIR)
+    parser.add_argument("--icg-dir", default=DEFAULT_ICG_DIR)
     parser.add_argument("--find-dir", default=DEFAULT_FIND_DIR)
     parser.add_argument("--areas", default=",".join(DEFAULT_AREAS), help="逗号分隔的区域目录名")
     return parser.parse_args()
@@ -264,7 +340,7 @@ def parse_args():
 def main():
     args = parse_args()
     areas = [item.strip() for item in args.areas.split(",") if item.strip()]
-    state = build_state(args.mac_dir, args.wireless_dir, areas)
+    state = build_state(args.mac_dir, args.wireless_dir, args.icg_dir, areas)
     write_find_files(state, args.find_dir)
     print(f"Done. Generated/updated {len(state['ip_to_macs'])} files in {args.find_dir}")
 

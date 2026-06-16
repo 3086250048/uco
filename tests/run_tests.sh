@@ -60,14 +60,24 @@ if grep -Fq '8ca9-82f9-bc80' "$TJ_AC_CSV"; then
     fail "$TJ_AC_CSV 包含已下线客户端"
 fi
 
-mkdir -p "$TMP_DIR/index/mac/UCO" "$TMP_DIR/index/wireless/UCO" "$TMP_DIR/index/find"
+mkdir -p "$TMP_DIR/index/mac/UCO" "$TMP_DIR/index/wireless/UCO" "$TMP_DIR/index/icg" "$TMP_DIR/index/find"
 cp "$MAC_ARP_CSV" "$TMP_DIR/index/mac/UCO/latest.csv"
 cp "$AC_CSV" "$TMP_DIR/index/wireless/UCO/latest.csv"
-"$ROOT_DIR/bin/csv_to_ip.py" --mac-dir "$TMP_DIR/index/mac" --wireless-dir "$TMP_DIR/index/wireless" --find-dir "$TMP_DIR/index/find" --areas UCO >/dev/null
+{
+    echo 'username,displayName,mail,department,title,company,userPrincipalName,ip,mac,policy_name,policy_priority,policy_status,policy_type,policy_type_text,policy_state,policy_source,policy_group,policy_match,ap_name,ap_id'
+    echo 'alice,Alice,,,,,alice@example.com,10.0.0.5,0011-2233-4455,Test-01,4,启用,nhapp,应用控制策略,,local,,app_policy:user,AP-1,7'
+} > "$TMP_DIR/index/icg/latest_icg_users.csv"
+"$ROOT_DIR/bin/csv_to_ip.py" --mac-dir "$TMP_DIR/index/mac" --wireless-dir "$TMP_DIR/index/wireless" --icg-dir "$TMP_DIR/index/icg" --find-dir "$TMP_DIR/index/find" --areas UCO >/dev/null
 assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" '查询IP: 10.0.0.5'
 assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" '无线接入信息:'
+assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" 'ICG用户策略信息:'
+assert_file_contains "$TMP_DIR/index/find/10.0.0.5.txt" 'Test-01'
 
 bash -n "$ROOT_DIR"/bin/*.sh "$ROOT_DIR/bin/get_mac_port"
-python3 -m py_compile "$ROOT_DIR/bin/csv_to_ip.py" "$ROOT_DIR/bin/samba_audit_trigger.py"
+python3 -m py_compile \
+    "$ROOT_DIR/bin/csv_to_ip.py" \
+    "$ROOT_DIR/bin/collect_icg_users.py" \
+    "$ROOT_DIR/bin/icg_lookup_for_ip.py" \
+    "$ROOT_DIR/bin/samba_audit_trigger.py"
 
 echo "OK: all tests passed"
